@@ -28,16 +28,16 @@ volatile uint8_t second = 0;
 volatile uint16_t time_temp = 0;
 volatile uint16_t time_final = 0;
 volatile uint8_t bit = 0;
+volatile uint8_t value;
 volatile uint8_t invalid = 0;  //will be set to 0 at the beginning of the datagram, will be set to !0 if wrong datagram received
 //invalid = 1 -> rising edge to early
 //invalid = 2 -> wrong parity
 //invalid = 4 -> all bits are zero. no dcf77 signal?
 //invalid = 8 -> missing pulse (usually at second 0) came too early -> bad reception
-volatile uint8_t minute_inc = 0;  //will be set to 1 with bad dcf77 signal at the minute border
 volatile uint8_t hour_tens, hour_ones, minute_tens, minute_ones, second_tens, second_ones;  
 
 #define SR_STROBE  (1<<5)   //PD5  shift register strobe
-#define SR_DATA     (1<<6)   //PD6  shift register data
+#define SR_DATA     (1<<6)  //PD6  shift register data
 #define SR_CLOCK   (1<<7)   //PD7  shift register clock
 #define SR_OE      (2)      //PB2  shift register output enable
 #define DCF_DATA   (2)      //PD2
@@ -94,8 +94,8 @@ ISR(PCINT2_vect)  //will be executed every second, at rising edge
     if (PIND & (1<<DCF_DATA)) {  //if rising edge...
         timerval = TCNT1;
         if (timerval < 6500) {   //if rising edge too early...
-            invalid |= 1<<RISING_EDGE_TOO_EARLY;
-            time_temp = 0;
+            //invalid |= 1<<RISING_EDGE_TOO_EARLY;
+            //time_temp = 0;
             //uart_puts("rising edge too early\r\n"); 
         } else {
             second++;
@@ -105,13 +105,28 @@ ISR(PCINT2_vect)  //will be executed every second, at rising edge
 }
 
 
-ISR(TIMER1_COMPA_vect)  //will be executed every second, 150ms after rising edge
+ISR(TIMER1_COMPA_vect)  //will be executed every second, 100ms after rising edge, runs 100ms
 {
-    bit = (PIND & (1<<DCF_DATA))>>DCF_DATA;  //bit is 1 or 0
+    cli();
+    //bit = (PIND & (1<<DCF_DATA))>>DCF_DATA;  //bit is 1 or 0
+    uint8_t i = 0;
+    value = 128;
+    for(i=0; i<100;i++) {
+        if(PIND & (1<<DCF_DATA))
+            value++;
+        else
+            value--;
+        _delay_ms(1);
+    }
+    if (value > 128)
+        bit = 1;
+    else 
+        bit = 0;
     if ((second >= 22) & (second <= 36)) {
         time_temp += bit * 0b1000000000000000;
         time_temp >>= 1;
     }
+    sei();
 } 
 
 ISR(TIMER1_COMPB_vect)  //will be executed at missing pulse (second 0 only)
@@ -162,7 +177,7 @@ void output_shiftreg(uint32_t data)
     PORTD &= ~(SR_STROBE);
 }
 
-void output_uart(uint8_t hour_tens, uint8_t hour_ones, uint8_t minute_tens, uint8_t minute_ones, uint8_t second, uint32_t data2shiftreg)
+void output_uart(uint8_t hour_tens, uint8_t hour_ones, uint8_t minute_tens, uint8_t minute_ones, uint8_t second, uint32_t data2shiftreg, uint16_t time_temp, uint8_t value)
 {
     char buf[40];
     uart_puts("h10:");
@@ -186,6 +201,10 @@ void output_uart(uint8_t hour_tens, uint8_t hour_ones, uint8_t minute_tens, uint
     //ultoa(data2shiftreg, buf, 2);
     ultoa(time_temp, buf, 2);
     uart_puts(" 0b");
+    uart_puts(buf);
+    
+    utoa(value, buf, 10);
+    uart_puts(" v:");
     uart_puts(buf);
 
     uart_puts("\r\n");
@@ -255,9 +274,9 @@ int main (void)
     //pin change interrupt
     PCMSK2 = (1<<PCINT18);  //PCINT18 enabled (PD2)
     PCICR = (1<<PCIE2);     //PCINT2 enabled
-    //timer compareA interrupt (150ms after timer start with 8MHz and 1024 prescaler -> 1172 = 4*256+148)
-    OCR1AH = 4;
-    OCR1AL = 148;
+    //timer compareA interrupt (100ms after timer start with 8MHz and 1024 prescaler ->  781 = 3*256+13)
+    OCR1AH = 3;
+    OCR1AL = 13;
     //timer compareB interrupt (1050ms after timer start with 8MHz and 1024 prescaler -> 8203 = 32*256+11)
     OCR1BH = 32;
     OCR1BL = 11;
@@ -335,7 +354,7 @@ int main (void)
             data2shiftreg += ((uint32_t)hour_ones   & 0b1111) << 14;  
             data2shiftreg += ((uint32_t)hour_tens   & 0b0011) << 18;  
 
-            output_uart(hour_tens, hour_ones, minute_tens, minute_ones, second, data2shiftreg);
+            output_uart(hour_tens, hour_ones, minute_tens, minute_ones, second, data2shiftreg, time_temp, value);
             output_shiftreg(data2shiftreg);
         }
         old_second = second;
